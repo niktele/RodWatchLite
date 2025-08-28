@@ -30,8 +30,7 @@ jobs:
         run: |
           set -e
           yes | "${ANDROID_SDK_ROOT}/cmdline-tools/latest/bin/sdkmanager" --licenses >/dev/null
-          "${ANDROID_SDK_ROOT}/cmdline-tools/latest/bin/sdkmanager" --install \
-            "platform-tools" "platforms;android-34" "build-tools;34.0.0"
+          "${ANDROID_SDK_ROOT}/cmdline-tools/latest/bin/sdkmanager" --install "platform-tools" "platforms;android-34" "build-tools;34.0.0"
 
       - name: Unzip project
         run: unzip -o -q RoadWatch_MapLibre_Lite.zip -d .
@@ -47,40 +46,16 @@ jobs:
           echo "project_dir=$DIR" >> "$GITHUB_OUTPUT"
           echo "Project dir: $DIR"
 
-      - name: Detect AGP and choose Gradle
-        id: pick
-        shell: bash
-        run: |
-          set -euo pipefail
-          cd "${{ steps.locate.outputs.project_dir }}"
-          AGP_GAV=$(grep -Rho --include=\*gradle\* "com\.android\.tools\.build:gradle:[0-9.]\+" . | head -n1 || true)
-          AGP_PLUG=$(grep -Rho --include=\*gradle\* "id ['\"]com\.android\.[a-zA-Z]\+['\"][[:space:]]*version ['\"][0-9.]\+['\"]" . | head -n1 || true)
-          if [[ -n "${AGP_GAV}" ]]; then
-            VER=$(sed -E 's/.*gradle:([0-9.]+).*/\1/' <<<"${AGP_GAV}")
-          elif [[ -n "${AGP_PLUG}" ]]; then
-            VER=$(sed -E "s/.*version ['\"]([0-9.]+)['\"].*/\1/" <<<"${AGP_PLUG}")
-          else
-            VER=""
-          fi
-          GV=8.7
-          if [[ "$VER" == 8.1.* ]]; then GV=8.2; fi
-          if [[ "$VER" == 8.2.* ]]; then GV=8.3; fi
-          if [[ "$VER" == 8.3.* ]]; then GV=8.4; fi
-          if [[ "$VER" == 8.4.* ]]; then GV=8.6; fi
-          if [[ "$VER" == 8.5.* ]]; then GV=8.7; fi
-          echo "gradle=$GV" >> "$GITHUB_OUTPUT"
-          echo "Chose Gradle $GV for AGP $VER"
-
-      - name: Setup Gradle
+      - name: Setup Gradle 8.7
         uses: gradle/gradle-build-action@v3
         with:
-          gradle-version: ${{ steps.pick.outputs.gradle }}
+          gradle-version: 8.7
 
       - name: Generate Gradle wrapper
         run: |
           set -e
           cd "${{ steps.locate.outputs.project_dir }}"
-          gradle wrapper --gradle-version ${{ steps.pick.outputs.gradle }} --distribution-type bin
+          gradle wrapper --gradle-version 8.7 --distribution-type bin
           chmod +x ./gradlew
 
       - name: Build debug APK

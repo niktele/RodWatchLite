@@ -28,48 +28,99 @@ jobs:
         with:
           accept-android-sdk-licenses: true
 
-      # stabilna instalacija sa retry zbog flakey repo-a
       - name: Install Android packages (retry)
         shell: bash
         run: |
           set -euo pipefail
-          SDKM="$ANDROID_SDK_ROOT/cmdline-tools/$(ls -1 "$ANDROID_SDK_ROOT/cmdline-tools" | head -n1)/bin/sdkmanager"
-          echo "sdkmanager: $SDKM"
-          for attempt in 1 2 3; do
-            "$SDKM" --sdk_root="$ANDROID_SDK_ROOT" --install "platform-tools" "platforms;android-34" "build-tools;34.0.0" && break
-            echo "sdkmanager failed (attempt $attempt). Retry in 10s…"
-            sleep 10
-            if [[ $attempt == 3 ]]; then exit 1; fi
-          done
+          sdkmanager --sdk_root="$ANDROID_SDK_ROOT" --install "platform-tools" "platforms;android-34" "build-tools;34.0.0" || {
+            echo "Retry in 10s…"; sleep 10
+            sdkmanager --sdk_root="$ANDROID_SDK_ROOT" --install "platform-tools" "platforms;android-34" "build-tools;34.0.0"
+          }
 
       - name: Unzip project
         run: unzip -o -q RoadWatch_MapLibre_Lite.zip -d .
 
-      - name: Locate Gradle Wrapper
-        id: gw
+      # Pronađi root projekta (settings.gradle* najpouzdanije)
+      - name: Locate project root
+        id: root
         shell: bash
         run: |
           set -euo pipefail
-          shopt -s globstar nullglob
-          for f in **/gradlew; do
-            echo "gradlew=$f" >> "$GITHUB_OUTPUT"
-            echo "dir=$(dirname "$f")" >> "$GITHUB_OUTPUT"
-            exit 0
-          done
-          echo "Gradle Wrapper not found in ZIP"; exit 1
+          ROOT="$(find . -maxdepth 3 -type f \( -name 'settings.gradle' -o -name 'settings.gradle.kts' \) -print -quit)"
+          if [[ -z "$ROOT" ]]; then
+            ROOT="$(find . -maxdepth 3 -type f \( -name 'build.gradle' -o -name 'build.gradle.kts' \) -print -quit)"
+          fi
+          if [[ -z "$ROOT" ]]; then
+            echo "Nisam našao Gradle fajlove u ZIP-u"; exit 1
+          fi
+          DIR="$(dirname "$ROOT")"
+          echo "dir=$DIR" >> "$GITHUB_OUTPUT"
 
-      - name: Make gradlew executable
-        run: chmod +x "${{ steps.gw.outputs.gradlew }}"
+      # Ako nema wrapper, generiši ga – odaberi Gradle prema AGP verziji
+      - name: Ensure Gradle wrapper
+        id: ensure_wrapper
+        shell: bash
+        working-directory: ${{ steps.root.outputs.dir }}
+        run: |
+          set -euo pipefail
+          if [[ -x "./gradlew" ]]; then
+            echo "gradlew=./gradlew" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          echo "Gradle wrapper ne postoji – generišem…"
+
+          # Detekcija AGP verzije
+          AGP_GAV=$(grep -Rho --include=\*gradle\* "com\.android\.tools\.build:gradle:[0-9.]\+" . | head -n1 || true)
+          AGP_PLUG=$(grep -Rho --include=\*gradle\* "id ['\"]com\.android\.[a-zA-Z]\+['\"][[:space:]]*version ['\"][0-9.]\+['\"]" . | head -n1 || true)
+          if [[ -n "${AGP_GAV}" ]]; then
+            VER=$(sed -E 's/.*gradle:([0-9.]+).*/\1/' <<<"${AGP_GAV}")
+          elif [[ -n "${AGP_PLUG}" ]]; then
+            VER=$(sed -E "s/.*version ['\"]([0-9.]+)['\"].*/\1/" <<<"${AGP_PLUG}")
+          else
+            VER=""
+          fi
+          echo "AGP: ${VER:-nepoznat}"
+
+          # Mapiranje AGP→Gradle (sigurne kombinacije)
+          GV=8.4
+          if [[ "$VER" == 8.1.* ]]; then GV=8.2; fi
+          if [[ "$VER" == 8.2.* ]]; then GV=8.3; fi
+          if [[ "$VER" == 8.3.* ]]; then GV=8.4; fi
+          if [[ "$VER" == 8.4.* ]]; then GV=8.6; fi
+          if [[ "$VER" == 8.5.* ]]; then GV=8.7; fi
+
+          echo "Biram Gradle $GV"
+
+          # Preuzmi standalone Gradle i pokreni 'wrapper' task
+          TMP="$RUNNER_TEMP/gradle-$GV"
+          mkdir -p "$TMP"
+          curl -sSL "https://services.gradle.org/distributions/gradle-${GV}-bin.zip" -o "$TMP/gradle.zip"
+          unzip -q "$TMP/gradle.zip" -d "$TMP"
+          "$TMP/gradle-${GV}/bin/gradle" wrapper --gradle-version "$GV"
+
+          chmod +x ./gradlew
+          echo "gradlew=./gradlew" >> "$GITHUB_OUTPUT"
 
       - name: Set up Gradle cache
         uses: gradle/actions/setup-gradle@v3
 
-      - name: Build (assembleDebug)
-        working-directory: ${{ steps.gw.outputs.dir }}
-        run: ./gradlew --no-daemon assembleDebug
+      - name: Build (try assembleDebug → assemble → assembleRelease)
+        working-directory: ${{ steps.root.outputs.dir }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          ./gradlew --version
+          ./gradlew --no-daemon --stacktrace assembleDebug || \
+          ./gradlew --no-daemon --stacktrace assemble || \
+          ./gradlew --no-daemon --stacktrace assembleRelease
 
-      - name: Upload APKs
+      - name: Upload build artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: apks
-          path: ${{ steps.gw.outputs.dir }}/**/*.apk
+          name: android-artifacts
+          path: |
+            ${{ steps.root.outputs.dir }}/**/*.apk
+            ${{ steps.root.outputs.dir }}/**/*.aab
+            ${{ steps.root.outputs.dir }}/**/outputs/**/*
+          if-no-files-found: warn

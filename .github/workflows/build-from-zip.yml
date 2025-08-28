@@ -22,14 +22,12 @@ jobs:
           java-version: '17'
 
       # Android SDK + paketi (bez ručnog sdkmanager-a)
-      - name: Setup Android SDK
-        uses: android-actions/setup-android@v3
-        with:
-          accept-android-sdk-licenses: true
-          packages: |
-            platforms;android-34
-            build-tools;34.0.0
-            platform-tools
+     - name: Setup Android SDK
+  uses: android-actions/setup-android@v3
+  with:
+    accept-android-sdk-licenses: true
+    packages: platform-tools "platforms;android-34" "build-tools;34.0.0"
+
 
       - name: Unzip project
         run: unzip -o -q RoadWatch_MapLibre_Lite.zip -d .

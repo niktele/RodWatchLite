@@ -27,8 +27,10 @@ jobs:
         uses: android-actions/setup-android@v3
         with:
           accept-android-sdk-licenses: true
-          # VAŽNO: sve u JEDNOJ liniji!
-          packages: platform-tools "platforms;android-34" "build-tools;34.0.0"
+          packages: |
+            platform-tools
+            platforms;android-34
+            build-tools;34.0.0
 
       - name: (Fallback) Ensure licenses & packages
         run: |
@@ -61,11 +63,8 @@ jobs:
         run: |
           set -euo pipefail
           echo "Scanning build files..."
-          # Stari format: buildscript { classpath "com.android.tools.build:gradle:X.Y.Z" }
           AGP_GAV=$(grep -Rho --include=\*gradle\* "com\.android\.tools\.build:gradle:[0-9.]\+" . | head -n1 || true)
-          # Novi format: plugins { id "com.android.application" version "X.Y.Z" }
           AGP_PLUG=$(grep -Rho --include=\*gradle\* "id ['\"]com\.android\.[a-zA-Z]\+['\"][[:space:]]*version ['\"][0-9.]\+['\"]" . | head -n1 || true)
-
           if [[ -n "${AGP_GAV}" ]]; then
             VER=$(sed -E 's/.*gradle:([0-9.]+).*/\1/' <<<"${AGP_GAV}")
           elif [[ -n "${AGP_PLUG}" ]]; then
@@ -74,8 +73,6 @@ jobs:
             VER=""
           fi
           echo "AGP detected: ${VER:-none}"
-
-          # Mapiranje AGP -> Gradle (sigurne kombinacije)
           GV=8.7
           if [[ "$VER" == 8.1.* ]]; then GV=8.2; fi
           if [[ "$VER" == 8.2.* ]]; then GV=8.3; fi
@@ -83,7 +80,6 @@ jobs:
           if [[ "$VER" == 8.4.* ]]; then GV=8.6; fi
           if [[ "$VER" == 8.5.* ]]; then GV=8.7; fi
           if [[ "$VER" == 7.*   ]]; then GV=7.6.4; fi
-
           echo "Chosen Gradle: $GV"
           echo "gradle=$GV" >> "$GITHUB_OUTPUT"
 
@@ -95,10 +91,8 @@ jobs:
           if [[ -x "./gradlew" ]]; then
             echo "Gradle wrapper already present."
           else
-            echo "No Gradle wrapper – generating with Gradle ${ { steps.pick.outputs.gradle } }"
+            echo "No Gradle wrapper – generating with Gradle ${{ steps.pick.outputs.gradle }}"
             GV="${{ steps.pick.outputs.gradle }}"
-            cd "$GITHUB_WORKSPACE/${{ steps.loc.outputs.dir }}"
-            # preuzmi gradle bin
             curl -sL "https://services.gradle.org/distributions/gradle-${GV}-bin.zip" -o "$RUNNER_TEMP/gradle.zip"
             unzip -q "$RUNNER_TEMP/gradle.zip" -d "$RUNNER_TEMP"
             GRADLE_HOME=$(find "$RUNNER_TEMP" -maxdepth 1 -type d -name "gradle-${GV}" | head -n1)
@@ -107,11 +101,10 @@ jobs:
           fi
           chmod +x ./gradlew
 
-      - name: Setup Gradle (cache, config)
+      - name: Setup Gradle (cache, summary)
         uses: gradle/actions/setup-gradle@v3
         with:
           add-job-summary: 'on'
-        working-directory: ${{ steps.loc.outputs.dir }}
 
       - name: Build Debug & Release
         working-directory: ${{ steps.loc.outputs.dir }}
@@ -122,9 +115,9 @@ jobs:
         working-directory: ${{ steps.loc.outputs.dir }}
         run: |
           echo "APK files:"
-          ls -lah **/build/outputs/apk/**/*.{apk} || true
+          find . -path "*/build/outputs/apk/*" -name "*.apk" -printf "%p\n" || true
           echo "AAB files:"
-          ls -lah **/build/outputs/bundle/**/*.{aab} || true
+          find . -path "*/build/outputs/bundle/*" -name "*.aab" -printf "%p\n" || true
 
       - name: Upload Debug APKs
         uses: actions/upload-artifact@v4

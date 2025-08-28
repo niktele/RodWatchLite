@@ -10,7 +10,6 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
-
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -35,3 +34,66 @@ jobs:
             "platform-tools" "platforms;android-34" "build-tools;34.0.0"
 
       - name: Unzip project
+        run: unzip -o -q RoadWatch_MapLibre_Lite.zip -d .
+
+      - name: Locate project root
+        id: locate
+        shell: bash
+        run: |
+          set -euo pipefail
+          ROOT=$(find . -maxdepth 3 -type f \( -name settings.gradle -o -name settings.gradle.kts -o -name build.gradle -o -name build.gradle.kts \) | head -n1)
+          if [[ -z "$ROOT" ]]; then echo "Gradle project not found"; exit 1; fi
+          DIR=$(dirname "$ROOT")
+          echo "project_dir=$DIR" >> "$GITHUB_OUTPUT"
+          echo "Project dir: $DIR"
+
+      - name: Detect AGP and choose Gradle
+        id: pick
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "${{ steps.locate.outputs.project_dir }}"
+          AGP_GAV=$(grep -Rho --include=\*gradle\* "com\.android\.tools\.build:gradle:[0-9.]\+" . | head -n1 || true)
+          AGP_PLUG=$(grep -Rho --include=\*gradle\* "id ['\"]com\.android\.[a-zA-Z]\+['\"][[:space:]]*version ['\"][0-9.]\+['\"]" . | head -n1 || true)
+          if [[ -n "${AGP_GAV}" ]]; then
+            VER=$(sed -E 's/.*gradle:([0-9.]+).*/\1/' <<<"${AGP_GAV}")
+          elif [[ -n "${AGP_PLUG}" ]]; then
+            VER=$(sed -E "s/.*version ['\"]([0-9.]+)['\"].*/\1/" <<<"${AGP_PLUG}")
+          else
+            VER=""
+          fi
+          GV=8.7
+          if [[ "$VER" == 8.1.* ]]; then GV=8.2; fi
+          if [[ "$VER" == 8.2.* ]]; then GV=8.3; fi
+          if [[ "$VER" == 8.3.* ]]; then GV=8.4; fi
+          if [[ "$VER" == 8.4.* ]]; then GV=8.6; fi
+          if [[ "$VER" == 8.5.* ]]; then GV=8.7; fi
+          echo "gradle=$GV" >> "$GITHUB_OUTPUT"
+          echo "Chose Gradle $GV for AGP $VER"
+
+      - name: Setup Gradle
+        uses: gradle/gradle-build-action@v3
+        with:
+          gradle-version: ${{ steps.pick.outputs.gradle }}
+
+      - name: Generate Gradle wrapper
+        run: |
+          set -e
+          cd "${{ steps.locate.outputs.project_dir }}"
+          gradle wrapper --gradle-version ${{ steps.pick.outputs.gradle }} --distribution-type bin
+          chmod +x ./gradlew
+
+      - name: Build debug APK
+        run: |
+          set -e
+          cd "${{ steps.locate.outputs.project_dir }}"
+          ./gradlew assembleDebug --stacktrace
+
+      - name: Upload APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: app-debug-apk
+          path: |
+            ${{ steps.locate.outputs.project_dir }}/**/build/outputs/apk/**/*.apk
+            ${{ steps.locate.outputs.project_dir }}/**/build/outputs/bundle/**/*.aab
+          if-no-files-found: error

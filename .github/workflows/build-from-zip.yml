@@ -4,22 +4,23 @@ on:
   workflow_dispatch:
   push:
     paths:
-      - RoadWatch_MapLibre_Lite.zip
-      - .github/workflows/build-from-zip.yml
+      - 'RoadWatch_MapLibre_Lite.zip'
+      - '.github/workflows/build-from-zip.yml'
 
 jobs:
   build:
     runs-on: ubuntu-latest
+    timeout-minutes: 45
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Setup Java 17
+      - name: Setup Java
         uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: '17'
-          cache: gradle
 
       - name: Setup Android SDK
         uses: android-actions/setup-android@v3
@@ -28,9 +29,7 @@ jobs:
 
       - name: Install Android packages
         run: |
-          set -e
-          yes | "${ANDROID_SDK_ROOT}/cmdline-tools/latest/bin/sdkmanager" --licenses >/dev/null
-          "${ANDROID_SDK_ROOT}/cmdline-tools/latest/bin/sdkmanager" --install "platform-tools" "platforms;android-34" "build-tools;34.0.0"
+          sdkmanager --install "platform-tools" "platforms;android-34" "build-tools;34.0.0"
 
       - name: Unzip project
         run: unzip -o -q RoadWatch_MapLibre_Lite.zip -d .
@@ -40,36 +39,58 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          ROOT=$(find . -maxdepth 3 -type f \( -name settings.gradle -o -name settings.gradle.kts -o -name build.gradle -o -name build.gradle.kts \) | head -n1)
+          ROOT=$(find . -maxdepth 4 -type f \( -name settings.gradle -o -name settings.gradle.kts -o -name build.gradle -o -name build.gradle.kts \) | head -n1)
           if [[ -z "$ROOT" ]]; then echo "Gradle project not found"; exit 1; fi
           DIR=$(dirname "$ROOT")
           echo "project_dir=$DIR" >> "$GITHUB_OUTPUT"
           echo "Project dir: $DIR"
 
-      - name: Setup Gradle 8.7
+      - name: Detect AGP and choose Gradle (safe)
+        id: pick
+        shell: bash
+        run: |
+          set -euo pipefail
+          AGP_GAV=$(grep -Rho --include=\*gradle\* "com\.android\.tools\.build:gradle:[0-9.]\+" "${{ steps.locate.outputs.project_dir }}" || true | head -n1)
+          AGP_PLUG=$(grep -Rho --include=\*gradle\* "id ['\"]com\.android\.[a-zA-Z]\+['\"][[:space:]]*version ['\"][0-9.]\+['\"]" "${{ steps.locate.outputs.project_dir }}" || true | head -n1)
+          if [[ -n "$AGP_GAV" ]]; then VER=$(sed -E 's/.*gradle:([0-9.]+).*/\1/' <<<"$AGP_GAV"); \
+          elif [[ -n "$AGP_PLUG" ]]; then VER=$(sed -E "s/.*version ['\"]([0-9.]+)['\"].*/\1/" <<<"$AGP_PLUG"); \
+          else VER=""; fi
+          GV=8.4
+          [[ "$VER" == 8.1.* ]] && GV=8.2
+          [[ "$VER" == 8.2.* ]] && GV=8.3
+          [[ "$VER" == 8.3.* ]] && GV=8.4
+          [[ "$VER" == 8.4.* ]] && GV=8.6
+          [[ "$VER" == 8.5.* ]] && GV=8.7
+          echo "gradle=$GV" >> "$GITHUB_OUTPUT"
+          echo "AGP: ${VER:-unknown}, Gradle: $GV"
+
+      - name: Setup Gradle
         uses: gradle/gradle-build-action@v3
         with:
-          gradle-version: 8.7
+          gradle-version: ${{ steps.pick.outputs.gradle }}
           build-root-directory: ${{ steps.locate.outputs.project_dir }}
+          dependency-graph: disabled
 
-      - name: Generate Gradle wrapper
+      - name: Ensure Gradle wrapper
+        shell: bash
         run: |
-          set -e
           cd "${{ steps.locate.outputs.project_dir }}"
-          gradle wrapper --gradle-version 8.7 --distribution-type bin
-          chmod +x ./gradlew
+          if [[ ! -x "./gradlew" ]]; then
+            gradle wrapper --gradle-version ${{ steps.pick.outputs.gradle }} --distribution-type bin
+            chmod +x ./gradlew
+          fi
 
-      - name: Build debug APK
+      - name: Build (Debug & Release)
         run: |
-          set -e
           cd "${{ steps.locate.outputs.project_dir }}"
-          ./gradlew assembleDebug --stacktrace
+          ./gradlew --no-daemon --stacktrace assembleDebug assembleRelease
 
-      - name: Upload APK artifact
+      - name: Upload artifacts (APK/AAB)
         uses: actions/upload-artifact@v4
         with:
-          name: app-debug-apk
+          name: roadwatch-lite-build
           path: |
             ${{ steps.locate.outputs.project_dir }}/**/build/outputs/apk/**/*.apk
             ${{ steps.locate.outputs.project_dir }}/**/build/outputs/bundle/**/*.aab
-          if-no-files-found: error
+          if-no-files-found: warn
+          retention-days: 7

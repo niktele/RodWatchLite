@@ -20,70 +20,106 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Proveri ZIP
+      - name: Resolve ZIP path
         id: zip
         shell: bash
         run: |
           set -euo pipefail
-          ZIP="${{ github.event.inputs.zip_path || 'RoadWatch_MapLibre_Lite.zip' }}"
-          [[ -f "$ZIP" ]] || { echo "ZIP ne postoji: $ZIP" >&2; exit 1; }
-          echo "zip=$ZIP" >> "$GITHUB_OUTPUT"
+          ZIP_INPUT="${{ github.event.inputs.zip_path }}"
+          if [[ -z "${ZIP_INPUT:-}" ]]; then ZIP_INPUT='RoadWatch_MapLibre_Lite.zip'; fi
+          [[ -f "$ZIP_INPUT" ]] || { echo "::error::ZIP ne postoji: $ZIP_INPUT"; exit 1; }
+          echo "zip=$ZIP_INPUT" >> "$GITHUB_OUTPUT"
+          echo "Koristim ZIP: $ZIP_INPUT"
 
-      - name: Java 17
+      - name: Set up Java 17
         uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: '17'
 
-      - name: Android SDK
+      - name: Set up Android SDK
         uses: android-actions/setup-android@v3
         with:
           accept-android-sdk-licenses: true
 
-      - name: Raspakuj projekat
+      - name: Unzip project
         shell: bash
         run: unzip -o -q "${{ steps.zip.outputs.zip }}" -d "$GITHUB_WORKSPACE/extracted"
 
-      - name: Nađi root (settings.gradle)
+      - name: Locate project root
         id: proj
         shell: bash
         run: |
           set -euo pipefail
-          ROOT_FILE=$(grep -RIl -m1 --include=settings.gradle --include=settings.gradle.kts ./"extracted" || true)
-          [[ -n "${ROOT_FILE:-}" ]] || { echo "Nije nađen settings.gradle u ZIP-u." >&2; exit 1; }
-          ROOT_DIR=$(dirname "$ROOT_FILE")
-          echo "dir=$ROOT_DIR" >> "$GITHUB_OUTPUT"
-          echo "Root: $ROOT_DIR"
+          cd "$GITHUB_WORKSPACE/extracted"
 
-      - name: Detekcija compileSdk / buildTools
+          # 1) Probaj settings.gradle / settings.gradle.kts
+          ROOT_FILE=$(grep -RIl -m1 --include=settings.gradle --include=settings.gradle.kts . || true)
+          if [[ -n "${ROOT_FILE:-}" ]]; then
+            ROOT_DIR=$(dirname "$ROOT_FILE")
+          else
+            # 2) Ako postoji gradlew, uzmi njegov dir
+            GRADLEW=$(find . -type f -name gradlew -print -quit || true)
+            if [[ -n "${GRADLEW:-}" ]]; then
+              ROOT_DIR=$(dirname "$GRADLEW")
+            else
+              # 3) Nađi prvi modul koji koristi com.android.application
+              MOD=$(grep -RIl --include=build.gradle --include=build.gradle.kts "com\.android\.application" . | head -n1 || true)
+              if [[ -n "${MOD:-}" ]]; then
+                ROOT_DIR=$(dirname "$MOD")
+              else
+                echo "::group::Sadržaj ZIP-a (do 2 nivoa)"
+                ls -la
+                echo "----"
+                find . -maxdepth 2 -type f | sed 's|^\./||'
+                echo "::endgroup::"
+                echo "::error::Nije nađen settings.gradle/settings.gradle.kts, gradlew, ni modul sa com.android.application."
+                exit 1
+              fi
+            fi
+          fi
+
+          ROOT_ABS="$GITHUB_WORKSPACE/extracted/${ROOT_DIR#./}"
+          echo "dir=$ROOT_ABS" >> "$GITHUB_OUTPUT"
+          echo "Root: $ROOT_ABS"
+
+      - name: Detect compileSdk / buildTools / ndk
         id: android
         shell: bash
         working-directory: ${{ steps.proj.outputs.dir }}
         run: |
           set -euo pipefail
-          CSK=$(grep -Rho --include=*.gradle* "compileSdk\s*=\s*[0-9]+" . | sed -E 's/.*=\s*([0-9]+)/\1/' | head -n1 || true)
-          [[ -n "$CSK" ]] || CSK=$(grep -Rho --include=*.gradle* "compileSdkVersion\s+[0-9]+" . | sed -E 's/.*\s([0-9]+)/\1/' | head -n1 || true)
+          CSK=$(grep -Rho --include=\*.gradle\* "compileSdk\s*=\s*[0-9]\+" . | sed -E 's/.*=\s*([0-9]+)/\1/' | head -n1 || true)
+          [[ -n "$CSK" ]] || CSK=$(grep -Rho --include=\*.gradle\* "compileSdkVersion\s+[0-9]\+" . | sed -E 's/.*\s([0-9]+)/\1/' | head -n1 || true)
           [[ -n "$CSK" ]] || CSK=34
-          BTV=$(grep -Rho --include=*.gradle* "buildToolsVersion\s+['\"][0-9.]+['\"]" . | sed -E "s/.*['\"]([0-9.]+)['\"].*/\1/" | head -n1 || true)
+
+          BTV=$(grep -Rho --include=\*.gradle\* "buildToolsVersion\s+['\"][0-9.]+['\"]" . | sed -E "s/.*['\"]([0-9.]+)['\"].*/\1/" | head -n1 || true)
           [[ -n "$BTV" ]] || BTV=34.0.0
+
+          NDK=$(grep -Rho --include=\*.gradle\* "ndkVersion\s+['\"][0-9a-zA-Z\.\-]+['\"]" . | sed -E "s/.*['\"]([0-9a-zA-Z\.\-]+)['\"].*/\1/" | head -n1 || true)
+
           echo "compileSdk=$CSK" >> "$GITHUB_OUTPUT"
           echo "buildTools=$BTV" >> "$GITHUB_OUTPUT"
-          echo "compileSdk=$CSK, buildTools=$BTV"
+          echo "ndk=$NDK" >> "$GITHUB_OUTPUT"
+          echo "Detected: compileSdk=$CSK, buildTools=$BTV, ndk=${NDK:-(none)}"
 
-      - name: Install Android pakete
+      - name: Install Android packages
         shell: bash
         run: |
           set -euo pipefail
-          yes | sdkmanager --licenses >/dev/null || true
+          yes | sdkmanager --licenses || true
           sdkmanager --install "platform-tools" "platforms;android-${{ steps.android.outputs.compileSdk }}" "build-tools;${{ steps.android.outputs.buildTools }}"
+          if [[ -n "${{ steps.android.outputs.ndk }}" ]]; then
+            sdkmanager --install "ndk;${{ steps.android.outputs.ndk }}" || true
+          fi
 
-      - name: Gradle wrapper (ako fali)
+      - name: Ensure Gradle wrapper
         shell: bash
         working-directory: ${{ steps.proj.outputs.dir }}
         run: |
           set -euo pipefail
           if [[ ! -x ./gradlew ]]; then
-            echo "gradlew nije u ZIP-u -> preuzimam Gradle 8.7 i generišem wrapper"
+            echo "gradlew nije nađen → generišem wrapper (Gradle 8.7)"
             cd "$RUNNER_TEMP"
             curl -sL https://services.gradle.org/distributions/gradle-8.7-bin.zip -o gradle.zip
             unzip -q gradle.zip
@@ -99,14 +135,14 @@ jobs:
       - name: Build Debug
         shell: bash
         working-directory: ${{ steps.proj.outputs.dir }}
-        run: ./gradlew assembleDebug --no-daemon
+        run: ./gradlew assembleDebug --no-daemon --stacktrace
 
-      - name: (Opcionalno) Build Release
+      - name: (Optional) Build Release
         shell: bash
         working-directory: ${{ steps.proj.outputs.dir }}
-        run: ./gradlew assembleRelease --no-daemon || true
+        run: ./gradlew assembleRelease --no-daemon --stacktrace || true
 
-      - name: Sakupi APK/AAB
+      - name: Collect APK/AAB
         id: collect
         shell: bash
         working-directory: ${{ steps.proj.outputs.dir }}
@@ -116,11 +152,17 @@ jobs:
           shopt -s globstar nullglob
           found=0
           for f in **/build/outputs/apk/**/*.apk **/build/outputs/bundle/**/*.aab; do
-            cp "$f" "$GITHUB_WORKSPACE/_artifacts/" && echo "Collected: $f" && found=1
+            echo "Found: $f"
+            cp "$f" "$GITHUB_WORKSPACE/_artifacts/"
+            found=1
           done
-          [[ $found -eq 1 ]] || { echo "Nisu nađeni APK/AAB fajlovi." >&2; exit 1; }
+          if [[ $found -eq 0 ]]; then
+            echo "::error::Nisu nađeni APK/AAB fajlovi."
+            find . -maxdepth 4 -type f -path "*/build/outputs/*" | sed 's|^\./||' || true
+            exit 1
+          fi
 
-      - name: Upload artefakata
+      - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
           name: app-builds

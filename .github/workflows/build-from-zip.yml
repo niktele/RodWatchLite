@@ -17,13 +17,12 @@ jobs:
           distribution: temurin
           java-version: '17'
 
-      # Prihvati Android licence AUTOMATSKI (nema više yes| ...)
+      # Android SDK + licence
       - name: Setup Android SDK
         uses: android-actions/setup-android@v3
         with:
           accept-android-sdk-licenses: true
 
-      # Ručno instaliramo potrebne pakete
       - name: Install Android packages
         run: |
           sdkmanager --install "platform-tools" "platforms;android-34" "build-tools;34.0.0"
@@ -31,22 +30,19 @@ jobs:
       - name: Unzip project
         run: unzip -o -q RoadWatch_MapLibre_Lite.zip -d .
 
-      - name: Setup Gradle 8.7
-        uses: gradle/actions/setup-gradle@v3
-        with:
-          gradle-version: '8.7'
-
-      - name: Generate Gradle wrapper (8.7)
-        run: gradle -q wrapper --gradle-version 8.7
-
-      - name: Make wrapper executable
-        run: chmod +x ./gradlew
-
-      - name: Build debug APK
-        run: ./gradlew assembleDebug
-
-      - name: Upload APK artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: app-debug.apk
-          path: app/build/outputs/apk/debug/app-debug.apk
+      # DETECT AGP -> izaberi kompatibilan Gradle
+      - name: Detect AGP and choose Gradle
+        id: pick
+        shell: bash
+        run: |
+          set -e
+          # Tražimo npr. com.android.tools.build:gradle:8.3.2
+          AGP=$(grep -Rho "com\.android\.tools\.build:gradle:[0-9.]\+" --include \*gradle\* . || true)
+          echo "Found AGP lines:"
+          echo "$AGP"
+          VER=$(echo "$AGP" | head -n1 | sed -E 's/.*gradle:([0-9.]+).*/\1/')
+          echo "AGP version: $VER"
+          case "$VER" in
+            8.1.*) GV=8.2 ;;   # AGP 8.1 → Gradle 8.0–8.2
+            8.2.*) GV=8.3 ;;   # AGP 8.2 → Gradle 8.1–8.3
+            8.3.

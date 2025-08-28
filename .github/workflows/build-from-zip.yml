@@ -69,11 +69,11 @@ jobs:
         run: |
           set -euo pipefail
           if [[ ! -f settings.gradle && ! -f settings.gradle.kts ]]; then
-            echo "Nema settings.gradle u izabranom folderu → nije validan Gradle projekat." >&2
+            echo "Nema settings.gradle u izabranom folderu." >&2
             exit 1
           fi
           if [[ ! -f gradlew ]]; then
-            echo "Gradle wrapper NIJE u ZIP-u. Dodaj gradlew, gradlew.bat i gradle/wrapper/* u ZIP (iz root foldera projekta)." >&2
+            echo "Gradle wrapper NIJE u ZIP-u. Dodaj gradlew, gradlew.bat i gradle/wrapper/* u ZIP." >&2
             exit 1
           fi
           chmod +x gradlew
@@ -108,10 +108,13 @@ jobs:
           yes | sdkmanager --licenses >/dev/null || true
           sdkmanager --list | head -n 50 || true
 
-      - name: Setup Gradle (keš)
+      # ⬇️ KLJUČNO: reci setup-gradle gde je build root
+      - name: Setup Gradle (cache)
         uses: gradle/actions/setup-gradle@v3
         with:
+          build-root-directory: ${{ steps.proj.outputs.dir }}
           cache-read-only: false
+          add-job-summary: false
 
       - name: Build Debug
         shell: bash

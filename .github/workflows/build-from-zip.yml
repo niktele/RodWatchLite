@@ -4,13 +4,14 @@ on:
   workflow_dispatch:
   push:
     paths:
-      - 'RoadWatch_MapLibre_Lite.zip'
-      - '.github/workflows/build-from-zip.yml'
+      - RoadWatch_MapLibre_Lite.zip
+      - .github/workflows/build-from-zip.yml
 
 jobs:
   build:
     runs-on: ubuntu-latest
     timeout-minutes: 30
+
     env:
       ZIP_NAME: RoadWatch_MapLibre_Lite.zip
 
@@ -22,47 +23,43 @@ jobs:
         uses: actions/setup-java@v4
         with:
           distribution: temurin
-          java-version: '17'
+          java-version: "17"
 
-      # Samo postavi SDK i prihvati licence (NE instaliramo pakete ovde)
+      # Postavi Android SDK i prihvati licence (bez paketa ovde)
       - name: Setup Android SDK
         uses: android-actions/setup-android@v3
         with:
           accept-android-sdk-licenses: true
 
-      # Instalacija paketa direktno preko sdkmanager (stabilno)
+      # Instaliraj SDK pakete (svaki posebno, bez višerednih argumenata)
       - name: Install Android packages
         shell: bash
         run: |
-          set -euo pipefail
+          set -euxo pipefail
           SDKM="$ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager"
-          echo "Using sdkmanager at: $SDKM"
           yes | "$SDKM" --sdk_root="$ANDROID_SDK_ROOT" --licenses
-          yes | "$SDKM" --sdk_root="$ANDROID_SDK_ROOT" --install \
-            "platform-tools" \
-            "platforms;android-34" \
-            "build-tools;34.0.0"
+          yes | "$SDKM" --sdk_root="$ANDROID_SDK_ROOT" --install "platform-tools"
+          yes | "$SDKM" --sdk_root="$ANDROID_SDK_ROOT" --install "platforms;android-34"
+          yes | "$SDKM" --sdk_root="$ANDROID_SDK_ROOT" --install "build-tools;34.0.0"
 
       - name: Unzip project
-        run: |
-          test -f "$ZIP_NAME" || { echo "::error::ZIP '$ZIP_NAME' not found at repo root"; exit 1; }
-          unzip -o -q "$ZIP_NAME" -d .
+        run: unzip -o -q "$ZIP_NAME" -d .
 
-      - name: Locate Gradle project dir
+      - name: Find project dir
         id: loc
         shell: bash
         run: |
           set -euo pipefail
-          DIR=$(find . -maxdepth 3 -type f \( -name settings.gradle -o -name settings.gradle.kts \) -printf '%h\n' | head -n1 || true)
-          if [[ -z "${DIR}" ]]; then
-            echo "::error::Cannot find settings.gradle(.kts) after unzip."
-            find . -maxdepth 3 -type f -name "*.gradle*" -printf "%p\n" || true
+          dir=$(find . -maxdepth 3 -type f \( -name settings.gradle -o -name settings.gradle.kts \) -printf '%h\n' | head -n1 || true)
+          if [ -z "$dir" ]; then
+            echo "::error::settings.gradle(.kts) not found after unzip"
             exit 1
           fi
-          echo "dir=${DIR}" >> "$GITHUB_OUTPUT"
-          echo "Project dir: ${DIR}"
+          echo "dir=$dir" >> "$GITHUB_OUTPUT"
+          echo "Project dir: $dir"
 
-      - name: Detect AGP and pick Gradle
+      # Detektuj AGP i izaberi kompatibilan Gradle (ako wrapper fali)
+      - name: Pick Gradle for AGP
         id: pick
         shell: bash
         working-directory: ${{ steps.loc.outputs.dir }}
@@ -77,32 +74,41 @@ jobs:
           else
             VER=""
           fi
-          echo "AGP detected: ${VER:-none}"
+          echo "AGP: ${VER:-unknown}"
           GV=8.7
-          if [[ "$VER" == 8.1.* ]]; then GV=8.2; fi
-          if [[ "$VER" == 8.2.* ]]; then GV=8.3; fi
-          if [[ "$VER" == 8.3.* ]]; then GV=8.4; fi
+          if [[ "$VER" == 8.5.* ]]; then GV=8.7; fi
           if [[ "$VER" == 8.4.* ]]; then GV=8.6; fi
+          if [[ "$VER" == 8.3.* ]]; then GV=8.4; fi
+          if [[ "$VER" == 8.2.* ]]; then GV=8.3; fi
+          if [[ "$VER" == 8.1.* ]]; then GV=8.2; fi
           if [[ "$VER" == 7.*   ]]; then GV=7.6.4; fi
           echo "gradle=$GV" >> "$GITHUB_OUTPUT"
+          echo "Chosen Gradle: $GV"
 
-      - name: Ensure Gradle wrapper (generate if missing)
+      - name: Ensure Gradle wrapper
         shell: bash
         working-directory: ${{ steps.loc.outputs.dir }}
         run: |
-          set -euo pipefail
-          if [[ -x "./gradlew" ]]; then
-            echo "Gradle wrapper already present."
-          else
+          set -euxo pipefail
+          if [ ! -x ./gradlew ]; then
             GV="${{ steps.pick.outputs.gradle }}"
-            echo "No wrapper – generating with Gradle $GV"
             curl -sL "https://services.gradle.org/distributions/gradle-${GV}-bin.zip" -o "$RUNNER_TEMP/gradle.zip"
             unzip -q "$RUNNER_TEMP/gradle.zip" -d "$RUNNER_TEMP"
-            GRADLE_HOME=$(find "$RUNNER_TEMP" -maxdepth 1 -type d -name "gradle-${GV}" | head -n1)
-            "$GRADLE_HOME/bin/gradle" wrapper --gradle-version "${GV}" --distribution-type bin
+            "$RUNNER_TEMP/gradle-${GV}/bin/gradle" wrapper --gradle-version "${GV}" --distribution-type bin
           fi
           chmod +x ./gradlew
 
-      - name: Setup Gradle (cache & summary)
-        uses: gradle/actions/setup-gradle@v3
+      - name: Build (Debug + Release)
+        shell: bash
+        working-directory: ${{ steps.loc.outputs.dir }}
+        run: ./gradlew --no-daemon --stacktrace clean assembleDebug assembleRelease
+
+      - name: Upload APK artifacts
+        uses: actions/upload-artifact@v4
         with:
+          name: APKs
+          path: |
+            ${{ steps.loc.outputs.dir }}/**/build/outputs/apk/debug/*.apk
+            ${{ steps.loc.outputs.dir }}/**/build/outputs/apk/release/*.apk
+          if-no-files-found: warn
+          compression-level: 0

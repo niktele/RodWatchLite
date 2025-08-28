@@ -30,7 +30,7 @@ jobs:
       - name: Unzip project
         run: unzip -o -q RoadWatch_MapLibre_Lite.zip -d .
 
-      # Fiksna, provereno dobra verzija Gradle-a za AGP 8.4/8.5
+      # Fiksna verzija Gradle-a koja odgovara AGP 8.4/8.5
       - name: Setup Gradle 8.6
         uses: gradle/actions/setup-gradle@v3
         with:
@@ -59,4 +59,7 @@ jobs:
         run: ./gradlew --no-daemon assembleDebug
 
       - name: Upload APK artifact
-        uses: actio
+        uses: actions/upload-artifact@v4
+        with:
+          name: RoadWatch-debug
+          path: '**/build/outputs/apk/debug/*.apk'

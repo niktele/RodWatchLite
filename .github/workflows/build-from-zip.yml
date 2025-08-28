@@ -31,18 +31,33 @@ jobs:
         run: unzip -o -q RoadWatch_MapLibre_Lite.zip -d .
 
       # DETECT AGP -> izaberi kompatibilan Gradle
-      - name: Detect AGP and choose Gradle
+            - name: Detect AGP and choose Gradle (safe)
         id: pick
         shell: bash
         run: |
-          set -e
-          # Tražimo npr. com.android.tools.build:gradle:8.3.2
-          AGP=$(grep -Rho "com\.android\.tools\.build:gradle:[0-9.]\+" --include \*gradle\* . || true)
-          echo "Found AGP lines:"
-          echo "$AGP"
-          VER=$(echo "$AGP" | head -n1 | sed -E 's/.*gradle:([0-9.]+).*/\1/')
-          echo "AGP version: $VER"
-          case "$VER" in
-            8.1.*) GV=8.2 ;;   # AGP 8.1 → Gradle 8.0–8.2
-            8.2.*) GV=8.3 ;;   # AGP 8.2 → Gradle 8.1–8.3
-            8.3.
+          set -euo pipefail
+          echo "Scanning build files..."
+          # 1) Stari format: buildscript { classpath "com.android.tools.build:gradle:X.Y.Z" }
+          AGP_GAV=$(grep -Rho --include=\*gradle\* "com\.android\.tools\.build:gradle:[0-9.]\+" . | head -n1 || true)
+          # 2) Novi format: plugins { id "com.android.application" version "X.Y.Z" }
+          AGP_PLUG=$(grep -Rho --include=\*gradle\* "id ['\"]com\.android\.[a-zA-Z]\+['\"][[:space:]]*version ['\"][0-9.]\+['\"]" . | head -n1 || true)
+
+          if [[ -n "${AGP_GAV}" ]]; then
+            VER=$(sed -E 's/.*gradle:([0-9.]+).*/\1/' <<<"${AGP_GAV}")
+          elif [[ -n "${AGP_PLUG}" ]]; then
+            VER=$(sed -E "s/.*version ['\"]([0-9.]+)['\"].*/\1/" <<<"${AGP_PLUG}")
+          else
+            VER=""
+          fi
+          echo "AGP detected: ${VER:-none}"
+
+          # Mapiranje AGP -> Gradle
+          GV=8.4
+          if [[ "$VER" == 8.1.* ]]; then GV=8.2; fi   # AGP 8.1 → Gradle ~8.2
+          if [[ "$VER" == 8.2.* ]]; then GV=8.3; fi   # AGP 8.2 → Gradle ~8.3
+          if [[ "$VER" == 8.3.* ]]; then GV=8.4; fi   # AGP 8.3 → Gradle 8.4
+          if [[ "$VER" == 8.4.* ]]; then GV=8.6; fi   # AGP 8.4 → Gradle 8.6
+          if [[ "$VER" == 8.5.* ]]; then GV=8.7; fi   # AGP 8.5 → Gradle 8.7
+
+          echo "Using Gradle $GV"
+          echo "gradle=$GV" >> "$GITHUB_OUTPUT"

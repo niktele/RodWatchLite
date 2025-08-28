@@ -35,28 +35,19 @@ jobs:
       - name: Install Android packages
         shell: bash
         run: |
-          set -euxo pipefail
-          SDKM="$ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager"
-          yes | "$SDKM" --sdk_root="$ANDROID_SDK_ROOT" --licenses
-          yes | "$SDKM" --sdk_root="$ANDROID_SDK_ROOT" --install "platform-tools"
-          yes | "$SDKM" --sdk_root="$ANDROID_SDK_ROOT" --install "platforms;android-34"
-          yes | "$SDKM" --sdk_root="$ANDROID_SDK_ROOT" --install "build-tools;34.0.0"
-
-      - name: Unzip project
-        run: unzip -o -q "$ZIP_NAME" -d .
-
-      - name: Find project dir
-        id: loc
-        shell: bash
-        run: |
           set -euo pipefail
-          dir=$(find . -maxdepth 3 -type f \( -name settings.gradle -o -name settings.gradle.kts \) -printf '%h\n' | head -n1 || true)
-          if [ -z "$dir" ]; then
-            echo "::error::settings.gradle(.kts) not found after unzip"
-            exit 1
-          fi
-          echo "dir=$dir" >> "$GITHUB_OUTPUT"
-          echo "Project dir: $dir"
+          SDKM="$ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager"
+
+          # Prihvati licence bez rušenja na SIGPIPE
+          set +o pipefail
+          yes | "$SDKM" --sdk_root="$ANDROID_SDK_ROOT" --licenses >/dev/null || true
+          set -o pipefail
+
+          # Instalacije bez 'yes' (licence su već prihvaćene)
+          "$SDKM" --sdk_root="$ANDROID_SDK_ROOT" --install "platform-tools"
+          "$SDKM" --sdk_root="$ANDROID_SDK_ROOT" --install "platforms;android-34"
+          "$SDKM" --sdk_root="$ANDROID_SDK_ROOT" --install "build-tools;34.0.0"
+
 
       # Detektuj AGP i izaberi kompatibilan Gradle (ako wrapper fali)
       - name: Pick Gradle for AGP

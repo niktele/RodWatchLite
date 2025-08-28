@@ -29,119 +29,64 @@ jobs:
           accept-android-sdk-licenses: true
 
       - name: Unzip project
-        run: unzip -o -q RoadWatch_MapLibre_Lite.zip -d .
+        run: unzip -o -q RoadWatch_MapLibre_Lite.zip -d src
 
-      - name: Detect project dir
+      - name: Locate Gradle root (smart)
         id: proj
         shell: bash
         run: |
           set -euo pipefail
-          DIR="$(find . -maxdepth 3 -type f \( -name gradlew -o -name settings.gradle -o -name settings.gradle.kts \) -printf '%h\n' | head -n1 || true)"
-          if [[ -z "${DIR}" ]]; then
-            echo "Nije pronađen Gradle projekat posle unzip-a." >&2
+          # Traži prave root-ove: moraju imati settings.gradle(.kts)
+          mapfile -t roots < <(find src -type f \( -name settings.gradle -o -name settings.gradle.kts \) -printf '%h\n' | sort -u)
+          if (( ${#roots[@]} == 0 )); then
+            echo "ZIP ne sadrži settings.gradle(.kts) → nije kompletan Gradle projekat." >&2
+            echo "Napomena: ZIP mora biti napravljen iz KORENOG foldera projekta (gde su gradlew i settings.gradle)." >&2
             exit 1
           fi
-          echo "dir=${DIR}" >> "$GITHUB_OUTPUT"
-          echo "Detected project dir: ${DIR}"
-          if [[ -f "${DIR}/gradlew" ]]; then chmod +x "${DIR}/gradlew"; fi
+          # Izaberi najplići path (najverovatniji root)
+          pick=""; mindepth=9999
+          for d in "${roots[@]}"; do
+            depth=$(awk -F/ '{print NF}' <<< "$d")
+            if (( depth < mindepth )); then mindepth=$depth; pick=$d; fi
+          done
+          # Ako postoji root koji ima i gradlew, daj mu prednost
+          for d in "${roots[@]}"; do
+            if [[ -f "$d/gradlew" ]]; then pick="$d"; break; fi
+          done
+          echo "dir=$pick" >> "$GITHUB_OUTPUT"
+          echo "Project dir: $pick"
+          [[ -f "$pick/gradlew" ]] && chmod +x "$pick/gradlew"
 
-      - name: Detect Android SDK versions from project
+      - name: Detect compileSdk/buildTools
         id: android
         shell: bash
         working-directory: ${{ steps.proj.outputs.dir }}
         run: |
           set -euo pipefail
-          # compileSdk (KTS i/ili Groovy)
           CS=$(grep -Rho --include=build.gradle* -E "compileSdk\s*=\s*[0-9]+" . | sed -E 's/.*=\s*([0-9]+)/\1/' | head -n1 || true)
-          if [[ -z "${CS}" ]]; then
-            CS=$(grep -Rho --include=build.gradle* -E "compileSdkVersion\s+[0-9]+" . | sed -E 's/.*\s([0-9]+)/\1/' | head -n1 || true)
-          fi
-          # buildToolsVersion 'x.y.z'
+          [[ -z "$CS" ]] && CS=$(grep -Rho --include=build.gradle* -E "compileSdkVersion\s+[0-9]+" . | sed -E 's/.*\s([0-9]+)/\1/' | head -n1 || true)
           BT=$(grep -Rho --include=build.gradle* -E "buildToolsVersion\s+['\"][0-9.]+['\"]" . | sed -E "s/.*['\"]([0-9.]+)['\"].*/\1/" | head -n1 || true)
-          [[ -z "${CS}" ]] && CS=34
-          [[ -z "${BT}" ]] && BT=34.0.0
-          echo "compileSdk=${CS}" >> "$GITHUB_OUTPUT"
-          echo "buildTools=${BT}" >> "$GITHUB_OUTPUT"
-          echo "Detected compileSdk=${CS}, buildTools=${BT}"
+          [[ -z "$CS" ]] && CS=34
+          [[ -z "$BT" ]] && BT=34.0.0
+          echo "compileSdk=$CS" >> "$GITHUB_OUTPUT"
+          echo "buildTools=$BT" >> "$GITHUB_OUTPUT"
+          echo "compileSdk=$CS buildTools=$BT"
 
       - name: Install Android packages
         shell: bash
         run: |
           set -euo pipefail
           SDKM="$ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager"
-          # Licence - bez rušenja na SIGPIPE
-          set +o pipefail
+          # Prihvati licence (ignoriši SIGPIPE warning)
           yes | "$SDKM" --sdk_root="$ANDROID_SDK_ROOT" --licenses >/dev/null || true
-          set -o pipefail
           "$SDKM" --sdk_root="$ANDROID_SDK_ROOT" --install "platform-tools"
           "$SDKM" --sdk_root="$ANDROID_SDK_ROOT" --install "platforms;android-${{ steps.android.outputs.compileSdk }}"
           "$SDKM" --sdk_root="$ANDROID_SDK_ROOT" --install "build-tools;${{ steps.android.outputs.buildTools }}"
 
-      - name: Setup Gradle (cache)
+      - name: Setup Gradle cache
         uses: gradle/actions/setup-gradle@v3
-        with:
-          cache-overwrite-existing: true
 
-      - name: Ensure Gradle wrapper (if missing)
+      - name: Verify Gradle project
         shell: bash
         working-directory: ${{ steps.proj.outputs.dir }}
         run: |
-          set -euo pipefail
-          if [[ ! -f gradlew ]]; then
-            echo "Gradle wrapper nije pronađen, generišem..."
-            gradle wrapper --gradle-version 8.7
-          fi
-          chmod +x gradlew
-          ./gradlew --version
-
-      - name: List modules and tasks (for debug)
-        shell: bash
-        working-directory: ${{ steps.proj.outputs.dir }}
-        run: |
-          ./gradlew projects > projects.txt || true
-          ./gradlew tasks --all > tasks.txt || true
-          head -n 200 projects.txt || true
-          echo "---- Available assemble tasks ----"
-          grep -iE "assemble(Debug|Release)" tasks.txt || true
-
-      - name: Build (smart target)
-        id: build
-        shell: bash
-        working-directory: ${{ steps.proj.outputs.dir }}
-        run: |
-          set -euo pipefail
-          echo "Trying: assembleDebug"
-          if ./gradlew --no-daemon --stacktrace --info assembleDebug; then
-            echo "apk_task=assembleDebug" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-          echo "Trying: :app:assembleDebug"
-          if ./gradlew --no-daemon --stacktrace --info :app:assembleDebug; then
-            echo "apk_task=:app:assembleDebug" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-          echo "Trying generic: assemble"
-          if ./gradlew --no-daemon --stacktrace --info assemble; then
-            echo "apk_task=assemble" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-          echo "Trying bundleRelease (AAB)"
-          if ./gradlew --no-daemon --stacktrace --info bundleRelease; then
-            echo "apk_task=bundleRelease" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-          echo "Build failed. Poslednjih ~200 linija:"
-          tail -n 200 *.log 2>/dev/null || true
-          exit 1
-
-      - name: Upload APK/AAB artifacts
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: app-builds
-          path: |
-            ${{ steps.proj.outputs.dir }}/**/*.apk
-            ${{ steps.proj.outputs.dir }}/**/*.aab
-            ${{ steps.proj.outputs.dir }}/projects.txt
-            ${{ steps.proj.outputs.dir }}/tasks.txt
-          if-no-files-found: warn

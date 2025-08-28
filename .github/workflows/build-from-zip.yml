@@ -17,20 +17,20 @@ jobs:
           distribution: temurin
           java-version: '17'
 
-      # Samo pripremi cmdline-tools; pakete instaliramo ručno
+      # Prihvati Android licence AUTOMATSKI (nema više yes| ...)
       - name: Setup Android SDK
         uses: android-actions/setup-android@v3
+        with:
+          accept-android-sdk-licenses: true
 
-      - name: Install platform-tools / platforms;android-34 / build-tools;34.0.0
-        shell: bash
+      # Ručno instaliramo potrebne pakete
+      - name: Install Android packages
         run: |
-          yes | sdkmanager --licenses > /dev/null
           sdkmanager --install "platform-tools" "platforms;android-34" "build-tools;34.0.0"
 
       - name: Unzip project
         run: unzip -o -q RoadWatch_MapLibre_Lite.zip -d .
 
-      # Koristimo novi Gradle action (ne deprecated)
       - name: Setup Gradle 8.7
         uses: gradle/actions/setup-gradle@v3
         with:

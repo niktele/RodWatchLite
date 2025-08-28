@@ -10,9 +10,6 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
-    env:
-      CI: true
-
     steps:
       - uses: actions/checkout@v4
 
@@ -21,20 +18,21 @@ jobs:
           distribution: temurin
           java-version: '17'
 
-      # Android SDK + paketi (nema ručnog sdkmanager/yes | licenses)
+      # Android SDK + licence + paketi (sve u jednoj liniji)
       - name: Android SDK
         uses: android-actions/setup-android@v3
         with:
           accept-android-sdk-licenses: true
-          packages: |
-            platform-tools
-            platforms;android-34
-            build-tools;34.0.0
+          packages: platform-tools "platforms;android-34" "build-tools;34.0.0"
 
       - name: Unzip project
         run: unzip -o -q RoadWatch_MapLibre_Lite.zip -d .
 
-      # Nađi gde je projekat (folder koji sadrži gradle fajlove)
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v3
+        with:
+          gradle-version: 8.6
+
       - name: Find project dir
         id: where
         shell: bash
@@ -42,26 +40,12 @@ jobs:
           set -e
           D=$(dirname "$(find . -name gradlew -maxdepth 4 -print -quit || true)")
           if [[ -z "$D" ]]; then
-            # ako nema gradlew, probaj da nađe build.gradle(.kts)
             D=$(dirname "$(find . -maxdepth 4 \( -name build.gradle -o -name build.gradle.kts \) -print -quit)")
           fi
-          if [[ -z "$D" ]]; then
-            echo "Gradle project not found"; exit 1
-          fi
           echo "dir=$D" >> "$GITHUB_OUTPUT"
-          echo "Project dir: $D"
-          ls -la "$D"
 
-      # Obezbedi Gradle CLI i keširanje
-      - name: Setup Gradle
-        uses: gradle/actions/setup-gradle@v3
-        with:
-          gradle-version: 8.6
-
-      # Napravi wrapper ako ga nema, pa učini izvršnim
       - name: Ensure Gradle wrapper
         working-directory: ${{ steps.where.outputs.dir }}
-        shell: bash
         run: |
           if [[ ! -f gradlew ]]; then
             gradle -q wrapper --gradle-version 8.6

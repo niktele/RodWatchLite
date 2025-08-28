@@ -10,6 +10,7 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     env:
       ZIP_NAME: RoadWatch_MapLibre_Lite.zip
 
@@ -23,19 +24,24 @@ jobs:
           distribution: temurin
           java-version: '17'
 
+      # Samo postavi SDK i prihvati licence (NE instaliramo pakete ovde)
       - name: Setup Android SDK
         uses: android-actions/setup-android@v3
         with:
           accept-android-sdk-licenses: true
-          packages: |
-            platform-tools
-            platforms;android-34
-            build-tools;34.0.0
 
-      - name: (Fallback) Ensure licenses & packages
+      # Instalacija paketa direktno preko sdkmanager (stabilno)
+      - name: Install Android packages
+        shell: bash
         run: |
-          yes | sdkmanager --licenses
-          yes | sdkmanager --install "platform-tools" "platforms;android-34" "build-tools;34.0.0"
+          set -euo pipefail
+          SDKM="$ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager"
+          echo "Using sdkmanager at: $SDKM"
+          yes | "$SDKM" --sdk_root="$ANDROID_SDK_ROOT" --licenses
+          yes | "$SDKM" --sdk_root="$ANDROID_SDK_ROOT" --install \
+            "platform-tools" \
+            "platforms;android-34" \
+            "build-tools;34.0.0"
 
       - name: Unzip project
         run: |
@@ -62,7 +68,6 @@ jobs:
         working-directory: ${{ steps.loc.outputs.dir }}
         run: |
           set -euo pipefail
-          echo "Scanning build files..."
           AGP_GAV=$(grep -Rho --include=\*gradle\* "com\.android\.tools\.build:gradle:[0-9.]\+" . | head -n1 || true)
           AGP_PLUG=$(grep -Rho --include=\*gradle\* "id ['\"]com\.android\.[a-zA-Z]\+['\"][[:space:]]*version ['\"][0-9.]\+['\"]" . | head -n1 || true)
           if [[ -n "${AGP_GAV}" ]]; then
@@ -78,9 +83,7 @@ jobs:
           if [[ "$VER" == 8.2.* ]]; then GV=8.3; fi
           if [[ "$VER" == 8.3.* ]]; then GV=8.4; fi
           if [[ "$VER" == 8.4.* ]]; then GV=8.6; fi
-          if [[ "$VER" == 8.5.* ]]; then GV=8.7; fi
           if [[ "$VER" == 7.*   ]]; then GV=7.6.4; fi
-          echo "Chosen Gradle: $GV"
           echo "gradle=$GV" >> "$GITHUB_OUTPUT"
 
       - name: Ensure Gradle wrapper (generate if missing)
@@ -91,57 +94,15 @@ jobs:
           if [[ -x "./gradlew" ]]; then
             echo "Gradle wrapper already present."
           else
-            echo "No Gradle wrapper – generating with Gradle ${{ steps.pick.outputs.gradle }}"
             GV="${{ steps.pick.outputs.gradle }}"
+            echo "No wrapper – generating with Gradle $GV"
             curl -sL "https://services.gradle.org/distributions/gradle-${GV}-bin.zip" -o "$RUNNER_TEMP/gradle.zip"
             unzip -q "$RUNNER_TEMP/gradle.zip" -d "$RUNNER_TEMP"
             GRADLE_HOME=$(find "$RUNNER_TEMP" -maxdepth 1 -type d -name "gradle-${GV}" | head -n1)
-            "$GRADLE_HOME/bin/gradle" --version
             "$GRADLE_HOME/bin/gradle" wrapper --gradle-version "${GV}" --distribution-type bin
           fi
           chmod +x ./gradlew
 
-      - name: Setup Gradle (cache, summary)
+      - name: Setup Gradle (cache & summary)
         uses: gradle/actions/setup-gradle@v3
         with:
-          add-job-summary: 'on'
-
-      - name: Build Debug & Release
-        working-directory: ${{ steps.loc.outputs.dir }}
-        run: |
-          ./gradlew --no-daemon --stacktrace clean assembleDebug assembleRelease
-
-      - name: List build outputs
-        working-directory: ${{ steps.loc.outputs.dir }}
-        run: |
-          echo "APK files:"
-          find . -path "*/build/outputs/apk/*" -name "*.apk" -printf "%p\n" || true
-          echo "AAB files:"
-          find . -path "*/build/outputs/bundle/*" -name "*.aab" -printf "%p\n" || true
-
-      - name: Upload Debug APKs
-        uses: actions/upload-artifact@v4
-        with:
-          name: APK-Debug
-          path: |
-            ${{ steps.loc.outputs.dir }}/**/build/outputs/apk/debug/*.apk
-          if-no-files-found: warn
-          compression-level: 0
-
-      - name: Upload Release APKs
-        uses: actions/upload-artifact@v4
-        with:
-          name: APK-Release
-          path: |
-            ${{ steps.loc.outputs.dir }}/**/build/outputs/apk/release/*.apk
-          if-no-files-found: warn
-          compression-level: 0
-
-      - name: Upload AAB (if any)
-        uses: actions/upload-artifact@v4
-        with:
-          name: AAB
-          path: |
-            ${{ steps.loc.outputs.dir }}/**/build/outputs/bundle/**/*.aab
-          if-no-files-found: warn
-          compression-level: 0

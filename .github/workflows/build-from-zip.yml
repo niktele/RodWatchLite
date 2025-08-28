@@ -10,6 +10,9 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
+    env:
+      CI: true
+
     steps:
       - uses: actions/checkout@v4
 
@@ -18,48 +21,61 @@ jobs:
           distribution: temurin
           java-version: '17'
 
-      # Android SDK + licence
-      - name: Setup Android SDK
+      # Android SDK + paketi (nema ručnog sdkmanager/yes | licenses)
+      - name: Android SDK
         uses: android-actions/setup-android@v3
         with:
           accept-android-sdk-licenses: true
-
-      - name: Install Android packages
-        run: sdkmanager --install "platform-tools" "platforms;android-34" "build-tools;34.0.0"
+          packages: |
+            platform-tools
+            platforms;android-34
+            build-tools;34.0.0
 
       - name: Unzip project
         run: unzip -o -q RoadWatch_MapLibre_Lite.zip -d .
 
-      # Fiksna verzija Gradle-a koja odgovara AGP 8.4/8.5
-      - name: Setup Gradle 8.6
-        uses: gradle/actions/setup-gradle@v3
-        with:
-          gradle-version: 8.6
-
-      - name: Locate Gradle project
+      # Nađi gde je projekat (folder koji sadrži gradle fajlove)
+      - name: Find project dir
         id: where
         shell: bash
         run: |
           set -e
-          D=$(dirname "$(find . -name gradlew -maxdepth 3 -print -quit || true)")
-          if [[ -z "$D" ]]; then D="."; fi
+          D=$(dirname "$(find . -name gradlew -maxdepth 4 -print -quit || true)")
+          if [[ -z "$D" ]]; then
+            # ako nema gradlew, probaj da nađe build.gradle(.kts)
+            D=$(dirname "$(find . -maxdepth 4 \( -name build.gradle -o -name build.gradle.kts \) -print -quit)")
+          fi
+          if [[ -z "$D" ]]; then
+            echo "Gradle project not found"; exit 1
+          fi
           echo "dir=$D" >> "$GITHUB_OUTPUT"
           echo "Project dir: $D"
+          ls -la "$D"
 
-      - name: Generate/refresh Gradle wrapper
-        working-directory: ${{ steps.where.outputs.dir }}
-        run: gradle -q wrapper --gradle-version 8.6
+      # Obezbedi Gradle CLI i keširanje
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v3
+        with:
+          gradle-version: 8.6
 
-      - name: Make wrapper executable
+      # Napravi wrapper ako ga nema, pa učini izvršnim
+      - name: Ensure Gradle wrapper
         working-directory: ${{ steps.where.outputs.dir }}
-        run: chmod +x gradlew
+        shell: bash
+        run: |
+          if [[ ! -f gradlew ]]; then
+            gradle -q wrapper --gradle-version 8.6
+          fi
+          chmod +x gradlew
+          ./gradlew --version
 
       - name: Build debug APK
         working-directory: ${{ steps.where.outputs.dir }}
-        run: ./gradlew --no-daemon assembleDebug
+        run: ./gradlew --no-daemon assembleDebug --stacktrace
 
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
         with:
           name: RoadWatch-debug
-          path: '**/build/outputs/apk/debug/*.apk'
+          path: ${{ steps.where.outputs.dir }}/**/build/outputs/apk/debug/*.apk
+          if-no-files-found: error

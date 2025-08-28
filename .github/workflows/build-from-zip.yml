@@ -10,87 +10,66 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
-    timeout-minutes: 45
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Setup Java
+      - name: Setup Java 17
         uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: '17'
 
+      # Android SDK + paketi (bez ručnog sdkmanager-a)
       - name: Setup Android SDK
         uses: android-actions/setup-android@v3
         with:
           accept-android-sdk-licenses: true
-
-      - name: Install Android packages
-        run: |
-          sdkmanager --install "platform-tools" "platforms;android-34" "build-tools;34.0.0"
+          packages: |
+            platforms;android-34
+            build-tools;34.0.0
+            platform-tools
 
       - name: Unzip project
         run: unzip -o -q RoadWatch_MapLibre_Lite.zip -d .
 
-      - name: Locate project root
-        id: locate
-        shell: bash
-        run: |
-          set -euo pipefail
-          ROOT=$(find . -maxdepth 4 -type f \( -name settings.gradle -o -name settings.gradle.kts -o -name build.gradle -o -name build.gradle.kts \) | head -n1)
-          if [[ -z "$ROOT" ]]; then echo "Gradle project not found"; exit 1; fi
-          DIR=$(dirname "$ROOT")
-          echo "project_dir=$DIR" >> "$GITHUB_OUTPUT"
-          echo "Project dir: $DIR"
-
-      - name: Detect AGP and choose Gradle (safe)
-        id: pick
-        shell: bash
-        run: |
-          set -euo pipefail
-          AGP_GAV=$(grep -Rho --include=\*gradle\* "com\.android\.tools\.build:gradle:[0-9.]\+" "${{ steps.locate.outputs.project_dir }}" || true | head -n1)
-          AGP_PLUG=$(grep -Rho --include=\*gradle\* "id ['\"]com\.android\.[a-zA-Z]\+['\"][[:space:]]*version ['\"][0-9.]\+['\"]" "${{ steps.locate.outputs.project_dir }}" || true | head -n1)
-          if [[ -n "$AGP_GAV" ]]; then VER=$(sed -E 's/.*gradle:([0-9.]+).*/\1/' <<<"$AGP_GAV"); \
-          elif [[ -n "$AGP_PLUG" ]]; then VER=$(sed -E "s/.*version ['\"]([0-9.]+)['\"].*/\1/" <<<"$AGP_PLUG"); \
-          else VER=""; fi
-          GV=8.4
-          [[ "$VER" == 8.1.* ]] && GV=8.2
-          [[ "$VER" == 8.2.* ]] && GV=8.3
-          [[ "$VER" == 8.3.* ]] && GV=8.4
-          [[ "$VER" == 8.4.* ]] && GV=8.6
-          [[ "$VER" == 8.5.* ]] && GV=8.7
-          echo "gradle=$GV" >> "$GITHUB_OUTPUT"
-          echo "AGP: ${VER:-unknown}, Gradle: $GV"
-
+      # Nova (podržana) Gradle akcija – zamenjuje gradle/gradle-build-action
       - name: Setup Gradle
-        uses: gradle/gradle-build-action@v3
+        uses: gradle/actions/setup-gradle@v4
         with:
-          gradle-version: ${{ steps.pick.outputs.gradle }}
-          build-root-directory: ${{ steps.locate.outputs.project_dir }}
-          dependency-graph: disabled
+          # piši u cache samo na main/master; inače read-only
+          cache-read-only: ${{ github.ref != 'refs/heads/main' && github.ref != 'refs/heads/master' }}
+          # ako runner već ima ~/.gradle, dozvoli overwrite da se ne gasi caching
+          cache-overwrite-existing: true
 
-      - name: Ensure Gradle wrapper
+      # Nađi gradle wrapper iz ZIP-a (bilo gde do 3 nivoa)
+      - name: Find Gradle wrapper
+        id: gw
         shell: bash
         run: |
-          cd "${{ steps.locate.outputs.project_dir }}"
-          if [[ ! -x "./gradlew" ]]; then
-            gradle wrapper --gradle-version ${{ steps.pick.outputs.gradle }} --distribution-type bin
-            chmod +x ./gradlew
+          set -euo pipefail
+          WRAPPER=$(find . -maxdepth 3 -type f -name gradlew | head -n1 || true)
+          if [ -z "${WRAPPER}" ]; then
+            echo "Gradle Wrapper nije pronađen u ZIP-u." >&2
+            exit 1
           fi
+          chmod +x "${WRAPPER}"
+          echo "wrapper=${WRAPPER}" >> "$GITHUB_OUTPUT"
 
-      - name: Build (Debug & Release)
-        run: |
-          cd "${{ steps.locate.outputs.project_dir }}"
-          ./gradlew --no-daemon --stacktrace assembleDebug assembleRelease
+      - name: Build Debug APK
+        run: ${{ steps.gw.outputs.wrapper }} assembleDebug
+
+      # (Opcionalno) Build release ako ti treba potpisivanje kasnije
+      # - name: Build Release AAB/APK
+      #   run: ${{ steps.gw.outputs.wrapper }} assembleRelease bundleRelease
 
       - name: Upload artifacts (APK/AAB)
         uses: actions/upload-artifact@v4
         with:
-          name: roadwatch-lite-build
+          name: roadwatch-lite-artifacts
           path: |
-            ${{ steps.locate.outputs.project_dir }}/**/build/outputs/apk/**/*.apk
-            ${{ steps.locate.outputs.project_dir }}/**/build/outputs/bundle/**/*.aab
-          if-no-files-found: warn
+            **/build/outputs/apk/**/*.apk
+            **/build/outputs/bundle/**/*.aab
+          if-no-files-found: error
           retention-days: 7
